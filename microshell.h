@@ -1,6 +1,5 @@
 #ifndef MICROSHELL_H
 #define MICROSHELL_H
-
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -13,8 +12,10 @@
 
 typedef struct s_cmd
 {
-	int 	fd[2];
-	char	*path;
+	int 			fd[2];
+	char			*path;
+	struct s_cmd	*prev;
+	struct s_cmd	*next;
 } t_cmd;
 
 
