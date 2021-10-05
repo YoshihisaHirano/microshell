@@ -4,75 +4,78 @@
  * ([1]) connects to the write end.
  */
 
-void	fatal_exit(char *arg)
+void	fatal_exit(void)
 {
-	write(2, arg, 7);
 	write(2, "error: fatal\n", 13);
 	exit(1);
 }
 
-void	child_process(char **env, int *fd, char *arg, int i)
+void	child_process(t_cmd *cmd, char **env, int input_fd)
 {
 	int	err;
 
-	printf("I am child\n");
-//	if (i != 1)
-//	{
-//		char buf[1000];
-//		int ret = read(fd[0], buf, 1000);
-//		buf[ret] = 0;
-//		printf("%s\n", buf);
-//	}
-	char *argv[] = {arg, NULL};
-	printf("%d %d\n", fd[0], fd[1]);
-	err = dup2(fd[0], STDIN_FILENO);
+	char *argv[] = {cmd->path, NULL};
+	if (cmd->prev == NULL)
+	{
+		close(cmd->fd[READ_END]);
+		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
+	}
+	else if (cmd->next == NULL)
+	{
+		close(cmd->fd[WRITE_END]);
+		err = dup2(input_fd, STDIN_FILENO);
+	}
+	else
+	{
+		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
+		if (err == -1)
+			fatal_exit();
+		err = dup2(input_fd, STDIN_FILENO);
+	}
 	if (err == -1)
-		fatal_exit("dup_in");
-	err = dup2(fd[1], STDOUT_FILENO);
+		fatal_exit();
+	err = execve(cmd->path, argv, env);
 	if (err == -1)
-		fatal_exit("dup_out");
-	close(fd[0]);
-	close(fd[1]);
-	execve(arg, argv, env);
-	write(2, "h\n", 2);
+	{
+		write(2, "Program failed: ", 16);
+		write(2, cmd->path, 7);
+		write(2, "\n", 1);
+	}
 }
 
-//void	exec_cmds(int *fd, char **env, char *arg, int i)
-//{
-//	int	pid;
-//	int status;
-//
-//	pid = fork();
-//	if (pid == -1)
-//		fatal_exit("fork");
-//	if (pid > 0)
-//	{
-//		waitpid(pid, &status, WUNTRACED);
-//		printf("%d -- status\n", status);
-//	}
-//	else
-//		child_process(env, fd, arg, i);
-//}
-
-void	execute_cmd(t_cmd *cmd, char **env)
+int	execute_cmd(t_cmd *cmd, char **env, int input_fd)
 {
 	int	err;
 	int	pid;
+	int status;
 
 	err = pipe(cmd->fd);
 	if (err == -1)
-		fatal_exit("pipe\n");
+		fatal_exit();
 	pid = fork();
-	if ()
+	if (pid > 0)
+	{
+		waitpid(pid, &status, 0);
+		close(cmd->fd[WRITE_END]);
+		if (input_fd > 0)
+			close(input_fd);
+	}
+	else
+		child_process(cmd, env, input_fd);
+	return (cmd->fd[READ_END]);
 }
 
 void	exec_list(t_cmd *cmds, char **env)
 {
+	int input_fd;
+
+	input_fd = 0;
 	while (cmds)
 	{
-		execute_cmd(cmds, env);
+		input_fd = execute_cmd(cmds, env, input_fd);
 		cmds = cmds->next;
 	}
+	close(input_fd);
 }
 
 void	add_to_back(t_cmd **start, t_cmd *elt)
@@ -105,6 +108,7 @@ t_cmd 	*add_cmds(char **argv)
 		new = malloc(sizeof(t_cmd));
 		new->path = argv[i];
 		new->prev = prev;
+		new->next = NULL;
 		add_to_back(&cmd, new);
 		prev = new;
 		i++;
@@ -121,6 +125,9 @@ int main(int argc, char **argv, char **env)
 	t_cmd	*cmds;
 
 	cmds = add_cmds(argv);
+//	printf("%s\n", cmds->path);
+//	cmds = cmds->next;
+//	printf("%s\n", cmds->path);
 	exec_list(cmds, env);
 //	p_err = pipe(fd);
 //	if (p_err == -1)
