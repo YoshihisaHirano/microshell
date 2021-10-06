@@ -1,8 +1,18 @@
 #include "microshell.h"
 
-/* The first descriptor ([0]) connects to the read end of the pipe; the second
- * ([1]) connects to the write end.
- */
+//for debug
+//void	ft_putnbr_fd(int nb, int fd);
+//void	ft_putchar_fd(char c, int fd);
+
+int	ft_strlen(const char *str)
+{
+	int	res;
+
+	res = 0;
+	while (str[res])
+		res++;
+	return (res);
+}
 
 void	fatal_exit(void)
 {
@@ -10,32 +20,50 @@ void	fatal_exit(void)
 	exit(1);
 }
 
+/*
+ * 1. [connected] -> [disconnected] == the process is the last in the pipeline
+ * 2. [connected] -> [connected] == (same as position in the middle of the
+ * pipeline)
+ * 3. [disconnected] -> [connected] || [no process] -> [connected] == (same
+ * as the first process in the pipeline)
+ * 4. [disconnected] -> [disconnected] == just your regular execve
+ *
+ *
+ * if this process is disconnected but the previous one is connected, it
+ * should read from the input fd and close the write fd
+ *
+ * if this process is connected and the prev one is NULL or disconnected,
+ * it should write to the write fd and close read fd
+ *
+ */
+
 void	child_process(t_cmd *cmd, char **env, int input_fd)
 {
 	int	err;
 
-	char *argv[] = {cmd->path, NULL};
-	if (cmd->prev == NULL)
+	err = 0;
+	if ((cmd->prev == NULL || !cmd->prev->connected) && cmd->connected)
 	{
 		close(cmd->fd[READ_END]);
 		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
 	}
-	else if (cmd->next == NULL)
+	else if (cmd->prev && (cmd->next == NULL || !cmd->next->connected) &&
+	cmd->connected)
 	{
 		close(cmd->fd[WRITE_END]);
 		err = dup2(input_fd, STDIN_FILENO);
 	}
-	else
+	else if (cmd->connected && cmd->next->connected)
 	{
 		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
-		if (err == -1)
+		if (err == ERR_CODE)
 			fatal_exit();
 		err = dup2(input_fd, STDIN_FILENO);
 	}
-	if (err == -1)
+	if (err == ERR_CODE)
 		fatal_exit();
-	err = execve(cmd->path, argv, env);
-	if (err == -1)
+	err = execve(cmd->path, cmd->args, env);
+	if (err == ERR_CODE)
 	{
 		write(2, "Program failed: ", 16);
 		write(2, cmd->path, 7);
@@ -49,8 +77,14 @@ int	execute_cmd(t_cmd *cmd, char **env, int input_fd)
 	int	pid;
 	int status;
 
+//	ft_putnbr_fd(input_fd, 2);
+//	ft_putchar_fd('\n', 2);
 	err = pipe(cmd->fd);
-	if (err == -1)
+//	ft_putnbr_fd(cmd->fd[READ_END], 2);
+//	ft_putchar_fd(' ', 2);
+//	ft_putnbr_fd(cmd->fd[WRITE_END], 2);
+//	ft_putchar_fd('\n', 2);
+	if (err == ERR_CODE)
 		fatal_exit();
 	pid = fork();
 	if (pid > 0)
@@ -62,6 +96,8 @@ int	execute_cmd(t_cmd *cmd, char **env, int input_fd)
 	}
 	else
 		child_process(cmd, env, input_fd);
+	if (!cmd->connected)
+		return (0);
 	return (cmd->fd[READ_END]);
 }
 
@@ -93,56 +129,97 @@ void	add_to_back(t_cmd **start, t_cmd *elt)
 	temp->next = elt;
 }
 
-t_cmd 	*add_cmds(char **argv)
+t_cmd	*create_cmd(char **args, t_cmd *prev, int connected)
 {
-	int		i;
-	t_cmd	*cmd;
-	t_cmd	*new;
-	t_cmd	*prev;
+	t_cmd	*new_elt;
 
-	i = 1;
-	cmd = NULL;
-	prev = NULL;
-	while (argv[i])
+	new_elt = malloc(sizeof(t_cmd));
+	if (!new_elt)
+		fatal_exit();
+	new_elt->path = args[0];
+	new_elt->args = args;
+	new_elt->connected = connected;
+	new_elt->prev = prev;
+	new_elt->next = NULL;
+	return (new_elt);
+}
+
+/*
+ * if cmd->prev == NULL && encountered_sym == '|' -> pipe_in = NO, pipe_out
+ * = YES
+ * if cmd->prev == NULL && encountered_sym == ';' -> pipe_in = NO,
+ * */
+
+void	add_cmd(char **args, t_cmd **cmds, char sym)
+{
+	t_cmd			*new_elt;
+	static t_cmd	*prev;
+	int				connected;
+
+	if (sym == '|')
+		connected = YES;
+	else
+		connected = NO;
+	new_elt = create_cmd(args, prev, connected);
+	add_to_back(cmds, new_elt);
+	prev = new_elt;
+}
+
+void	print_charr(char **args)
+{
+	int i = 0;
+	while (args[i])
+		printf("%s ", args[i++]);
+	printf("\n");
+}
+
+/* argv =
+ * { "/bin/ls", "|", "/usr/bin/grep", "microshell", ";", "/bin/echo", "i",
+ * "love", "my", "microshell", NULL }*/
+
+t_cmd	*parse_args(char **argv)
+{
+	int		start_idx;
+	int		i;
+	char	**prog_args;
+	t_cmd	*cmds;
+	int		j;
+
+	start_idx = 0;
+	i = 0;
+	j = 0;
+	cmds = NULL;
+	argv++;
+	while (1)
 	{
-		new = malloc(sizeof(t_cmd));
-		new->path = argv[i];
-		new->prev = prev;
-		new->next = NULL;
-		add_to_back(&cmd, new);
-		prev = new;
+		if (!argv[i] || !(strncmp(argv[i], "|", ft_strlen(argv[i])))
+		|| !(strncmp(argv[i], ";", ft_strlen(argv[i]))))
+		{
+			prog_args = malloc(sizeof(char *) * (i - start_idx) + 1);
+			while (start_idx < i)
+				prog_args[j++] = argv[start_idx++];
+			prog_args[j] = NULL;
+			j = 0;
+			start_idx++;
+			if (argv[i])
+				add_cmd(prog_args, &cmds, argv[i][0]);
+			else
+				add_cmd(prog_args, &cmds, 0);
+		}
+		if (!argv[i])
+			break ;
 		i++;
 	}
-	return (cmd);
+	return (cmds);
 }
 
 int main(int argc, char **argv, char **env)
 {
-//	int	fd[2];
-//	int	p_err;
-//	int	i;
-//	char buf[1000];
 	t_cmd	*cmds;
 
-	cmds = add_cmds(argv);
-//	printf("%s\n", cmds->path);
-//	cmds = cmds->next;
-//	printf("%s\n", cmds->path);
+	(void)env;
+	(void)argc;
+	cmds = parse_args(argv);
 	exec_list(cmds, env);
-//	p_err = pipe(fd);
-//	if (p_err == -1)
-//		fatal_exit("pipe");
-
-//	i = 1;
-//	while (argv[i])
-//	{
-//		exec_cmds(fd, env, argv[i], i);
-//		i++;
-//	}
-//	int ret = read(fd[0], buf, 1000);
-//	buf[ret] = 0;
-//	printf("%s", buf);
-//	close(fd[0]);
-//	close(fd[1]);
 	return (0);
 }
