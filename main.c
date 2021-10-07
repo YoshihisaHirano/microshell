@@ -1,9 +1,5 @@
 #include "microshell.h"
 
-//for debug
-//void	ft_putnbr_fd(int nb, int fd);
-//void	ft_putchar_fd(char c, int fd);
-
 int	ft_strlen(const char *str)
 {
 	int	res;
@@ -20,53 +16,78 @@ void	fatal_exit(void)
 	exit(1);
 }
 
-/*
- * 1. [connected] -> [disconnected] == the process is the last in the pipeline
- * 2. [connected] -> [connected] == (same as position in the middle of the
- * pipeline)
- * 3. [disconnected] -> [connected] || [no process] -> [connected] == (same
- * as the first process in the pipeline)
- * 4. [disconnected] -> [disconnected] == just your regular execve
- *
- *
- * if this process is disconnected but the previous one is connected, it
- * should read from the input fd and close the write fd
- *
- * if this process is connected and the prev one is NULL or disconnected,
- * it should write to the write fd and close read fd
- *
- */
+void	free_charr(char **args)
+{
+	int i;
 
-void	child_process(t_cmd *cmd, char **env, int input_fd)
+	i = 0;
+	while (args[i])
+	{
+		free(args[i]);
+		i++;
+	}
+	free(args);
+}
+
+void	clear_lst(t_cmd *lst)
+{
+	t_cmd	*temp;
+
+	temp = lst;
+	while (lst->next)
+	{
+		lst = lst->next;
+		free_charr(temp->args);
+		free(temp);
+		temp = lst;
+	}
+	free_charr(temp->args);
+	free(lst);
+}
+
+int	assign_chile_fd(t_cmd *cmd, int input_fd)
 {
 	int	err;
 
-	err = 0;
-	if ((cmd->prev == NULL || !cmd->prev->connected) && cmd->connected)
+	err = 2;
+	if (cmd->in_pipe == NO && cmd->out_pipe == YES)
 	{
 		close(cmd->fd[READ_END]);
 		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
 	}
-	else if (cmd->prev && (cmd->next == NULL || !cmd->next->connected) &&
-	cmd->connected)
+	else if (cmd->in_pipe == YES && cmd->out_pipe == NO)
 	{
 		close(cmd->fd[WRITE_END]);
 		err = dup2(input_fd, STDIN_FILENO);
 	}
-	else if (cmd->connected && cmd->next->connected)
+	else if (cmd->in_pipe == YES && cmd->out_pipe == YES)
 	{
 		err = dup2(cmd->fd[WRITE_END], STDOUT_FILENO);
 		if (err == ERR_CODE)
-			fatal_exit();
+			return (err);
 		err = dup2(input_fd, STDIN_FILENO);
 	}
-	if (err == ERR_CODE)
+	return (err);
+}
+
+void	child_process(t_cmd *cmd, char **env, int input_fd)
+{
+	int fd_res;
+	int	err;
+
+	fd_res = assign_chile_fd(cmd, input_fd);
+	if (fd_res == 2)
+	{
+		close(cmd->fd[WRITE_END]);
+		close(cmd->fd[READ_END]);
+	}
+	if (fd_res == ERR_CODE)
 		fatal_exit();
 	err = execve(cmd->path, cmd->args, env);
 	if (err == ERR_CODE)
 	{
-		write(2, "Program failed: ", 16);
-		write(2, cmd->path, 7);
+		write(2, "error: cannot execute ", 22);
+		write(2, cmd->path, ft_strlen(cmd->path));
 		write(2, "\n", 1);
 	}
 }
@@ -77,13 +98,7 @@ int	execute_cmd(t_cmd *cmd, char **env, int input_fd)
 	int	pid;
 	int status;
 
-//	ft_putnbr_fd(input_fd, 2);
-//	ft_putchar_fd('\n', 2);
 	err = pipe(cmd->fd);
-//	ft_putnbr_fd(cmd->fd[READ_END], 2);
-//	ft_putchar_fd(' ', 2);
-//	ft_putnbr_fd(cmd->fd[WRITE_END], 2);
-//	ft_putchar_fd('\n', 2);
 	if (err == ERR_CODE)
 		fatal_exit();
 	pid = fork();
@@ -96,8 +111,6 @@ int	execute_cmd(t_cmd *cmd, char **env, int input_fd)
 	}
 	else
 		child_process(cmd, env, input_fd);
-	if (!cmd->connected)
-		return (0);
 	return (cmd->fd[READ_END]);
 }
 
@@ -129,7 +142,7 @@ void	add_to_back(t_cmd **start, t_cmd *elt)
 	temp->next = elt;
 }
 
-t_cmd	*create_cmd(char **args, t_cmd *prev, int connected)
+t_cmd	*create_cmd(char **args, t_cmd *prev)
 {
 	t_cmd	*new_elt;
 
@@ -138,7 +151,6 @@ t_cmd	*create_cmd(char **args, t_cmd *prev, int connected)
 		fatal_exit();
 	new_elt->path = args[0];
 	new_elt->args = args;
-	new_elt->connected = connected;
 	new_elt->prev = prev;
 	new_elt->next = NULL;
 	return (new_elt);
@@ -147,35 +159,34 @@ t_cmd	*create_cmd(char **args, t_cmd *prev, int connected)
 /*
  * if cmd->prev == NULL && encountered_sym == '|' -> pipe_in = NO, pipe_out
  * = YES
- * if cmd->prev == NULL && encountered_sym == ';' -> pipe_in = NO,
+ * if cmd->prev == NULL && encountered_sym == ';' -> pipe_in = NO, pipe_out = NO
+ * if cmd->prev->pipe_out == YES && encountered sym == '|' -> pipe_in = YES,
+ * pipe_out = YES
+ * if cmd->prev->pipe_out == YES && encountered sym == ';' -> pipe_in = YES,
+ * pipe_out = NO
+ * for the last command in the list, the pipe_out = NO
  * */
 
 void	add_cmd(char **args, t_cmd **cmds, char sym)
 {
 	t_cmd			*new_elt;
 	static t_cmd	*prev;
-	int				connected;
 
-	if (sym == '|')
-		connected = YES;
-	else
-		connected = NO;
-	new_elt = create_cmd(args, prev, connected);
+	new_elt = create_cmd(args, prev);
+	new_elt->in_pipe = NO;
+	new_elt->out_pipe = NO;
+	if ((!new_elt->prev || !new_elt->prev->out_pipe) && sym == '|')
+		new_elt->out_pipe = YES;
+	else if (new_elt->prev && (new_elt->prev->out_pipe && sym == '|'))
+	{
+		new_elt->in_pipe = YES;
+		new_elt->out_pipe = YES;
+	}
+	else if (new_elt->prev && (new_elt->prev->out_pipe && (sym == ';' || !sym)))
+		new_elt->in_pipe = YES;
 	add_to_back(cmds, new_elt);
 	prev = new_elt;
 }
-
-void	print_charr(char **args)
-{
-	int i = 0;
-	while (args[i])
-		printf("%s ", args[i++]);
-	printf("\n");
-}
-
-/* argv =
- * { "/bin/ls", "|", "/usr/bin/grep", "microshell", ";", "/bin/echo", "i",
- * "love", "my", "microshell", NULL }*/
 
 t_cmd	*parse_args(char **argv)
 {
@@ -195,16 +206,19 @@ t_cmd	*parse_args(char **argv)
 		if (!argv[i] || !(strncmp(argv[i], "|", ft_strlen(argv[i])))
 		|| !(strncmp(argv[i], ";", ft_strlen(argv[i]))))
 		{
-			prog_args = malloc(sizeof(char *) * (i - start_idx) + 1);
-			while (start_idx < i)
-				prog_args[j++] = argv[start_idx++];
-			prog_args[j] = NULL;
-			j = 0;
+			if (i - start_idx > 0)
+			{
+				prog_args = malloc(sizeof(char *) * (i - start_idx) + 1);
+				while (start_idx < i)
+					prog_args[j++] = argv[start_idx++];
+				prog_args[j] = NULL;
+				j = 0;
+				if (argv[i])
+					add_cmd(prog_args, &cmds, argv[i][0]);
+				else
+					add_cmd(prog_args, &cmds, 0);
+			}
 			start_idx++;
-			if (argv[i])
-				add_cmd(prog_args, &cmds, argv[i][0]);
-			else
-				add_cmd(prog_args, &cmds, 0);
 		}
 		if (!argv[i])
 			break ;
@@ -221,5 +235,6 @@ int main(int argc, char **argv, char **env)
 	(void)argc;
 	cmds = parse_args(argv);
 	exec_list(cmds, env);
+	clear_lst(cmds);
 	return (0);
 }
