@@ -45,7 +45,7 @@ void	clear_lst(t_cmd *lst)
 	free(lst);
 }
 
-int	assign_chile_fd(t_cmd *cmd, int input_fd)
+int	assign_child_fd(t_cmd *cmd, int input_fd)
 {
 	int	err;
 
@@ -75,7 +75,7 @@ void	child_process(t_cmd *cmd, char **env, int input_fd)
 	int fd_res;
 	int	err;
 
-	fd_res = assign_chile_fd(cmd, input_fd);
+	fd_res = assign_child_fd(cmd, input_fd);
 	if (fd_res == 2)
 	{
 		close(cmd->fd[WRITE_END]);
